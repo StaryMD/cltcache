@@ -12,6 +12,8 @@ import subprocess
 import sys
 import time
 import configparser
+import json
+import shlex
 
 
 def save_to_file_raw(data, filename):
@@ -111,14 +113,48 @@ def get_preproc_hash(compile_args, config):
     return preproc_hash
 
 
-def compute_cache_key(clang_tidy_call, config):
-    clang_tidy = clang_tidy_call[0]
-    if "--" not in clang_tidy_call:
-        raise Exception("Missing '--' flag in compiler options")
+def extract_compilation_args(clang_tidy_call, config):
+    if "--" in clang_tidy_call:
+        forwardflag_index = clang_tidy_call.index("--")
 
-    forwardflag_index = clang_tidy_call.index("--")
-    compile_args = clang_tidy_call[forwardflag_index + 1:]
-    clang_tidy_args = clang_tidy_call[1:forwardflag_index]
+        compile_args = clang_tidy_call[forwardflag_index + 1 :]
+        clang_tidy_args = clang_tidy_call[1:forwardflag_index]
+
+        return compile_args, clang_tidy_args
+
+    clang_tidy_args = clang_tidy_call[1:]
+    compile_commands_file = None
+
+    for clang_tidy_arg in clang_tidy_args:
+        if clang_tidy_arg.startswith("-p="):
+            compile_commands_file = clang_tidy_arg[3:]
+
+    if compile_commands_file is None:
+        raise Exception(
+            "Missing '--' flag in compiler options and "
+            "missing '-p' flag in clang_tidy_args"
+        )
+
+    with open(compile_commands_file) as json_file:
+        data = json.loads(json_file.read())
+
+    source_file = clang_tidy_args[-1]
+
+    for item in data:
+        if item["file"] == source_file:
+            compile_command = item["command"]
+            compile_args = compile_command[compile_command.index(" ") + 1 :]
+            compile_args = shlex.split(compile_args)
+
+            return compile_args, clang_tidy_args
+
+    raise Exception(f"Source file not found in {compile_commands_file}")
+
+
+def compute_cache_key(clang_tidy_call, config):
+    compile_args, clang_tidy_args = extract_compilation_args(clang_tidy_call,
+                                                             config)
+    clang_tidy = clang_tidy_call[0]
 
     preproc_hash = get_preproc_hash(compile_args, config)
 
